@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Traductor</string>
+    <string name="app_name">Katlator AI</string>
     <string name="tap_to_speak">Toca para hablar</string>
     <string name="listening">Escuchando...</string>
     <string name="translating">Traduciendo...</string>

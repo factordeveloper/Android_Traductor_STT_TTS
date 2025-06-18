@@ -1,9 +1,16 @@
 package com.factordev.traslator
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.State
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.factordev.traslator.api.ApiConfig
+import com.factordev.traslator.api.LibreTranslateService
+import com.factordev.traslator.api.TranslationService
+import kotlinx.coroutines.launch
 
 data class Language(
     val code: String,
@@ -22,7 +29,11 @@ data class TranslationState(
     val hasAudioPermission: Boolean = false,
     val isSpeakingOriginal: Boolean = false,
     val isSpeakingTranslation: Boolean = false,
-    val isTtsReady: Boolean = false
+    val isTtsReady: Boolean = false,
+    val sourceVoice: String? = null, // Voz del interlocutor 1 (idioma original)
+    val targetVoice: String? = null, // Voz del interlocutor 2 (idioma traducido)
+    val availableSourceVoices: List<VoiceInfo> = emptyList(),
+    val availableTargetVoices: List<VoiceInfo> = emptyList()
 )
 
 class TranslatorViewModel : ViewModel() {
@@ -32,6 +43,8 @@ class TranslatorViewModel : ViewModel() {
     
     private var speechRecognitionService: SpeechRecognitionService? = null
     private var textToSpeechService: TextToSpeechService? = null
+    private val translationService = TranslationService.getInstance()
+    private val libreTranslateService = LibreTranslateService.getInstance()
 
     private val availableLanguages = listOf(
         Language("es", "Español"),
@@ -61,7 +74,7 @@ class TranslatorViewModel : ViewModel() {
                         errorMessage = null
                     )
                     if (recognizedText.isNotEmpty()) {
-                        translateText(recognizedText)
+                        translateText(recognizedText, context)
                     }
                 },
                 onError = { error ->
@@ -91,6 +104,9 @@ class TranslatorViewModel : ViewModel() {
             context = context,
             onInitialized = { success ->
                 _uiState.value = _uiState.value.copy(isTtsReady = success)
+                if (success) {
+                    loadAvailableVoices()
+                }
             },
             onSpeakingStarted = {
                 // Se determinará en la función específica cuál está hablando
@@ -109,6 +125,28 @@ class TranslatorViewModel : ViewModel() {
                 )
             }
         )
+    }
+
+    private fun loadAvailableVoices() {
+        val sourceVoices = textToSpeechService?.getAvailableVoicesForLanguage(_uiState.value.sourceLanguage.code) ?: emptyList()
+        val targetVoices = textToSpeechService?.getAvailableVoicesForLanguage(_uiState.value.targetLanguage.code) ?: emptyList()
+        
+        _uiState.value = _uiState.value.copy(
+            availableSourceVoices = sourceVoices,
+            availableTargetVoices = targetVoices
+        )
+    }
+
+    fun updateSourceVoice(voiceName: String) {
+        _uiState.value = _uiState.value.copy(sourceVoice = voiceName)
+    }
+
+    fun updateTargetVoice(voiceName: String) {
+        _uiState.value = _uiState.value.copy(targetVoice = voiceName)
+    }
+
+    fun getAvailableVoicesForLanguage(languageCode: String): List<VoiceInfo> {
+        return textToSpeechService?.getAvailableVoicesForLanguage(languageCode) ?: emptyList()
     }
 
     fun startListening() {
@@ -150,24 +188,89 @@ class TranslatorViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(errorMessage = null)
     }
 
-    fun updateOriginalText(text: String) {
+    fun updateOriginalText(text: String, context: Context? = null) {
         _uiState.value = _uiState.value.copy(originalText = text)
         if (text.isNotEmpty()) {
-            translateText(text)
+            translateText(text, context)
         }
     }
 
-    private fun translateText(text: String) {
-        _uiState.value = _uiState.value.copy(isTranslating = true)
+    private fun isNetworkAvailable(context: Context): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    private fun translateText(text: String, context: Context? = null) {
+        if (text.isBlank()) return
         
-        // TODO: Implementar traducción real con API
-        // Por ahora simulamos la traducción
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        // Verificar conectividad si tenemos contexto
+        if (context != null && !isNetworkAvailable(context)) {
             _uiState.value = _uiState.value.copy(
-                isTranslating = false,
-                translatedText = "Traducción de: $text"
+                translatedText = text, // Mostrar el texto original en la caja de abajo
+                errorMessage = "No hay conexión a internet. Verifica tu conexión e inténtalo de nuevo."
             )
-        }, 1500)
+            return
+        }
+        
+        _uiState.value = _uiState.value.copy(
+            isTranslating = true,
+            errorMessage = null
+        )
+        
+        viewModelScope.launch {
+            try {
+                val sourceCode = ApiConfig.getLanguageCodeForService(_uiState.value.sourceLanguage.code)
+                val targetCode = ApiConfig.getLanguageCodeForService(_uiState.value.targetLanguage.code)
+                
+                val result = if (ApiConfig.USE_LIBRE_TRANSLATE || !ApiConfig.hasValidGoogleApiKey()) {
+                    // Usar LibreTranslate (gratuito)
+                    libreTranslateService.translateText(
+                        text = text,
+                        sourceLanguage = sourceCode,
+                        targetLanguage = targetCode
+                    )
+                } else {
+                    // Usar Google Translate API (requiere API key)
+                    translationService.translateText(
+                        text = text,
+                        sourceLanguage = sourceCode,
+                        targetLanguage = targetCode,
+                        apiKey = ApiConfig.getGoogleTranslateApiKey()
+                    )
+                }
+                
+                result.fold(
+                    onSuccess = { translatedText ->
+                        _uiState.value = _uiState.value.copy(
+                            isTranslating = false,
+                            translatedText = translatedText,
+                            errorMessage = null
+                        )
+                    },
+                    onFailure = { exception ->
+                        val errorMessage = exception.message ?: "Error desconocido de traducción"
+                        // Mostrar el texto original en la caja de traducción cuando hay error
+                        _uiState.value = _uiState.value.copy(
+                            isTranslating = false,
+                            translatedText = text, // Mostrar el texto original en la caja de abajo
+                            errorMessage = "Error de traducción: $errorMessage"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                val errorMessage = e.message ?: "Error inesperado desconocido"
+                // Mostrar el texto original en la caja de traducción cuando hay error
+                _uiState.value = _uiState.value.copy(
+                    isTranslating = false,
+                    translatedText = text, // Mostrar el texto original en la caja de abajo
+                    errorMessage = "Error inesperado: $errorMessage"
+                )
+            }
+        }
     }
 
     fun swapLanguages() {
@@ -182,17 +285,25 @@ class TranslatorViewModel : ViewModel() {
         )
     }
 
-    fun updateSourceLanguage(language: Language) {
-        _uiState.value = _uiState.value.copy(sourceLanguage = language)
+    fun updateSourceLanguage(language: Language, context: Context? = null) {
+        _uiState.value = _uiState.value.copy(
+            sourceLanguage = language,
+            sourceVoice = null // Resetear voz al cambiar idioma
+        )
+        loadAvailableVoices()
         if (_uiState.value.originalText.isNotEmpty()) {
-            translateText(_uiState.value.originalText)
+            translateText(_uiState.value.originalText, context)
         }
     }
 
-    fun updateTargetLanguage(language: Language) {
-        _uiState.value = _uiState.value.copy(targetLanguage = language)
+    fun updateTargetLanguage(language: Language, context: Context? = null) {
+        _uiState.value = _uiState.value.copy(
+            targetLanguage = language,
+            targetVoice = null // Resetear voz al cambiar idioma
+        )
+        loadAvailableVoices()
         if (_uiState.value.originalText.isNotEmpty()) {
-            translateText(_uiState.value.originalText)
+            translateText(_uiState.value.originalText, context)
         }
     }
 
@@ -224,13 +335,13 @@ class TranslatorViewModel : ViewModel() {
             isSpeakingTranslation = false
         )
         
-        textToSpeechService?.speak(originalText, _uiState.value.sourceLanguage.code)
+        textToSpeechService?.speak(originalText, _uiState.value.sourceLanguage.code, _uiState.value.sourceVoice)
     }
     
     fun playTranslation() {
         val translatedText = _uiState.value.translatedText
         if (translatedText.isEmpty()) {
-            _uiState.value = _uiState.value.copy(errorMessage = "No hay traducción para reproducir")
+            _uiState.value = _uiState.value.copy(errorMessage = "No hay texto para reproducir")
             return
         }
         
@@ -248,7 +359,23 @@ class TranslatorViewModel : ViewModel() {
             isSpeakingTranslation = true
         )
         
-        textToSpeechService?.speak(translatedText, _uiState.value.targetLanguage.code)
+        // Si hay error de traducción, reproducir en el idioma original
+        val languageToUse = if (_uiState.value.errorMessage != null && 
+            translatedText == _uiState.value.originalText) {
+            _uiState.value.sourceLanguage.code
+        } else {
+            _uiState.value.targetLanguage.code
+        }
+        
+        // Usar la voz configurada para el idioma correspondiente
+        val voiceToUse = if (_uiState.value.errorMessage != null && 
+            translatedText == _uiState.value.originalText) {
+            _uiState.value.sourceVoice
+        } else {
+            _uiState.value.targetVoice
+        }
+        
+        textToSpeechService?.speak(translatedText, languageToUse, voiceToUse)
     }
     
     fun stopSpeaking() {
@@ -257,6 +384,18 @@ class TranslatorViewModel : ViewModel() {
             isSpeakingOriginal = false,
             isSpeakingTranslation = false
         )
+    }
+    
+    fun testVoice(voiceName: String, sampleText: String, languageCode: String) {
+        if (!_uiState.value.isTtsReady) {
+            _uiState.value = _uiState.value.copy(errorMessage = "Text-to-Speech no está listo")
+            return
+        }
+        
+        // Detener cualquier reproducción anterior
+        textToSpeechService?.stop()
+        
+        textToSpeechService?.speak(sampleText, languageCode, voiceName)
     }
     
     override fun onCleared() {
