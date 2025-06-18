@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Traductor</string>
+    <string name="tap_to_speak">Toca para hablar</string>
+    <string name="listening">Escuchando...</string>
+    <string name="translating">Traduciendo...</string>
+    <string name="speak_now">Habla ahora</string>
+    <string name="translation_result">Resultado de la traducción</string>
+    <string name="original_text">Texto original</string>
+    <string name="select_language">Seleccionar idioma</string>
+    <string name="spanish">Español</string>
+    <string name="english">Inglés</string>
+    <string name="french">Francés</string>
+    <string name="german">Alemán</string>
+    <string name="italian">Italiano</string>
+    <string name="portuguese">Portugués</string>
+    <string name="chinese">Chino</string>
+    <string name="japanese">Japonés</string>
+    <string name="swap_languages">Intercambiar idiomas</string>
+    <string name="play_translation">Reproducir traducción</string>
+    <string name="copy_text">Copiar texto</string>
+    <string name="clear_text">Limpiar texto</string>
+</resources>
